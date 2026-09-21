@@ -230,8 +230,7 @@ io.on("connection", (socket) => {
     });
     if (room.votes.size >= room.players.size) finishRound(code);
   });
-
-  socket.on("host:nextRound", () => {
+socket.on("host:nextRound", () => {
     const code = socket.data.code;
     const room = rooms.get(code);
     if (!room || socket.id !== room.hostId) return;
