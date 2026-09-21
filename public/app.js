@@ -130,7 +130,6 @@ socket.on("round:start", (data) => {
   $("voted-note").classList.toggle("hidden", !votedThisRound);
 
   $("vote-grid").innerHTML = data.players
-    .filter((p) => p.id !== myId)
     .map((p) => `<button class="vote-btn" data-id="${p.id}">${escapeHtml(p.name)}</button>`)
     .join("");
 
