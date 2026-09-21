@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<title>Most Likely To</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div class="stripe-rail" aria-hidden="true"></div>
+<div class="grain" aria-hidden="true"></div>
+
+<div id="app">
+
+  <!-- LANDING -->
+  <section id="view-landing" class="view active">
+    <div class="marquee">
+      <span class="spec-line">NO. 001 — PARTY EDITION</span>
+      <h1>MOST<br>LIKELY<br>TO</h1>
+      <p class="tag">the group decides. someone pays.</p>
+    </div>
+    <div class="stack bottom-dock">
+      <input id="landing-name" class="field" placeholder="your name" maxlength="20" />
+      <button id="btn-host" class="btn btn-primary">Host a game</button>
+      <div class="join-row">
+        <input id="landing-code" class="field code-field" placeholder="CODE" maxlength="4" />
+        <button id="btn-join" class="btn btn-secondary">Join</button>
+      </div>
+      <p id="landing-error" class="error"></p>
+    </div>
+  </section>
+
+  <!-- LOBBY -->
+  <section id="view-lobby" class="view">
+    <div class="topbar">
+      <span class="room-label">ROOM</span>
+      <span class="swing-tag">
+        <span class="swing-hole"></span>
+        <span id="lobby-code" class="room-code">----</span>
+      </span>
+    </div>
+    <h2 class="section-title">Who's in</h2>
+    <ul id="lobby-players" class="player-list"></ul>
+
+    <div id="host-controls-lobby" class="host-panel hidden">
+      <div class="divider"></div>
+      <h3 class="section-title small">Set this round's dare</h3>
+      <p class="hint">Say it out loud. Everyone should agree before you lock it in.</p>
+      <div id="dare-chip-list" class="chip-list"></div>
+      <div class="row-inline">
+        <input id="custom-dare-input" class="field" placeholder="or write your own dare..." maxlength="200" />
+        <button id="btn-add-dare" class="btn btn-ghost small">Add</button>
+      </div>
+      <button id="btn-lock-dare" class="btn btn-primary" disabled>Lock in dare</button>
+    </div>
+
+    <div id="non-host-waiting" class="hint center hidden">Waiting for the host to set this round's dare...</div>
+  </section>
+
+  <!-- DARE CONFIRM (all players see this before the round starts) -->
+  <section id="view-dare-confirm" class="view">
+    <p class="eyebrow">If you get voted, you must...</p>
+    <p id="dare-confirm-text" class="big-dare"></p>
+    <div class="bottom-dock">
+      <button id="btn-start-round" class="btn btn-primary host-only hidden">Everyone agrees — start the question</button>
+      <p class="hint center non-host-only hidden">Waiting for the host to start the round...</p>
+    </div>
+  </section>
+
+  <!-- QUESTION / VOTE -->
+  <section id="view-question" class="view">
+    <div class="topbar">
+      <span id="vote-progress" class="room-label">0 / 0 voted</span>
+      <span class="timer-chip"><span class="rec-dot" aria-hidden="true"></span><span id="timer" class="timer">20</span></span>
+    </div>
+    <p id="question-text" class="question"></p>
+    <div id="vote-grid" class="vote-grid"></div>
+    <p id="voted-note" class="hint center hidden">Vote locked in. Waiting on the room...</p>
+  </section>
+
+  <!-- RESULTS -->
+  <section id="view-results" class="view">
+    <p class="eyebrow">The group has spoken</p>
+    <h2 id="winner-name" class="winner-name"></h2>
+    <div id="results-bars" class="bars"></div>
+    <div class="divider"></div>
+    <p class="eyebrow">The dare</p>
+    <p id="results-dare" class="big-dare small"></p>
+    <div class="bottom-dock">
+      <button id="btn-next-round" class="btn btn-primary host-only hidden">Next round</button>
+      <button id="btn-end-game" class="btn btn-ghost host-only hidden">End game</button>
+      <p class="hint center non-host-only hidden">Waiting for the host to continue...</p>
+    </div>
+  </section>
+
+  <!-- ENDED -->
+  <section id="view-ended" class="view">
+    <p class="eyebrow">Final scores</p>
+    <h2 class="section-title">Leaderboard</h2>
+    <ol id="final-scores" class="score-list"></ol>
+    <div class="bottom-dock">
+      <button id="btn-play-again" class="btn btn-primary">Back to start</button>
+    </div>
+  </section>
+
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
