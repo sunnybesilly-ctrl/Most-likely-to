@@ -221,7 +221,7 @@ io.on("connection", (socket) => {
     const code = socket.data.code;
     const room = rooms.get(code);
     if (!room || room.phase !== "question") return;
-    if (!room.players.has(targetId) return;
+    if (!room.players.has(targetId)) return;
     room.votes.set(socket.id, targetId);
     io.to(code).emit("round:tick", {
       timeLeft: room.timeLeft,
