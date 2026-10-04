@@ -1,115 +1,254 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
-<title>Most Likely To</title>
-<link rel="icon" href="data:,">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css" />
-</head>
-<body>
+// Content banks. Dares are grouped by flavor so every round deals a varied set of 4.
+// Add, remove, or rewrite anything — plain strings.
 
-<div class="stripe-rail" aria-hidden="true"></div>
-<div class="grain" aria-hidden="true"></div>
+const DEFAULT_QUESTIONS = [
+  // dating + situationships
+  "Who's most likely to be in a situationship they refuse to call a situationship?",
+  "Who's most likely to text their ex at 2am and call it “closure”?",
+  "Who's most likely to catch feelings after one good conversation?",
+  "Who's most likely to leave someone on read for three days, then act like nothing happened?",
+  "Who's most likely to have a “type” that keeps getting them in trouble?",
+  "Who's most likely to get the ick over something absolutely tiny?",
+  "Who's most likely to ghost someone and feel zero guilt?",
+  "Who's most likely to have the most unhinged dating app bio?",
+  "Who's most likely to fall for a stranger across the room?",
+  "Who's most likely to rebrand a red flag as a “personality quirk”?",
+  "Who's most likely to have rizz that works on literally everyone?",
+  "Who's most likely to be thinking about someone in this room right now?",
+  "Who's most likely to have a crush they're hiding from the group chat?",
+  "Who's most likely to send the first “u up?” of the night?",
+  "Who's most likely to get back with their ex for the third time?",
+  "Who's most likely to keep a situationship going way past its expiration date?",
+  "Who's most likely to be someone's celebrity hall pass?",
+  "Who's most likely to have the best “how we met” story?",
+  "Who's most likely to cry over someone who did not deserve it?",
+  "Who's most likely to make a whole playlist for one specific person?",
+  "Who's most likely to bail on a date ten minutes in because the vibes were off?",
+  "Who's most likely to flirt their way out of a speeding ticket?",
+  "Who's most likely to be a menace on a first date?",
+  "Who's most likely to accidentally like a crush's photo from 2019?",
+  "Who's most likely to still be lurking their ex's finsta?",
+  "Who's most likely to say “nothing serious” and then plan the whole future?",
+  "Who's most likely to get a number and never text first?",
+  "Who's most likely to slide into the DMs after two drinks?",
+  "Who's most likely to have a hookup story they swore they'd take to the grave?",
+  "Who's most likely to fake a phone call to escape a bad date?",
+  "Who's most likely to have dated two people in the same friend group?",
+  "Who's most likely to plan the wedding before the second date?",
+  "Who's most likely to analyze their crush's Spotify for hidden messages?",
+  "Who's most likely to say “I'm over it” while clearly not over it?",
 
-<div id="app">
+  // phone + chronically online
+  "Who's most likely to have a camera roll that could end a career?",
+  "Who's most likely to have 9,000 unread emails and zero stress?",
+  "Who's most likely to post a story and check who watched it within 10 seconds?",
+  "Who's most likely to have a screen time that would genuinely scare us?",
+  "Who's most likely to have a playlist titled something embarrassing?",
+  "Who's most likely to have the spiciest search history?",
+  "Who's most likely to screenshot a private convo and send it to the group chat?",
+  "Who's most likely to text back in under 30 seconds, no matter who it is?",
+  "Who's most likely to type a whole paragraph, delete it, and send “lol”?",
+  "Who's most likely to be the reason the group chat got renamed?",
+  "Who's most likely to reply “omg sorry just saw this” to a text from last week?",
+  "Who's most likely to run a burner account just for lurking?",
+  "Who's most likely to go viral for something embarrassing?",
+  "Who's most likely to have a close friends story that is pure chaos?",
+  "Who's most likely to be chronically online and proud of it?",
+  "Who's most likely to doomscroll until 4am on a work night?",
+  "Who's most likely to argue with a stranger in the comments?",
+  "Who's most likely to have a 400-day streak and no memory of why?",
+  "Who's most likely to take 47 photos just to post one?",
+  "Who's most likely to send a voice memo longer than four minutes?",
+  "Who's most likely to start a podcast nobody asked for?",
+  "Who's most likely to have the most unhinged notes app?",
+  "Who's most likely to save a contact under a name they'd never say out loud?",
+  "Who's most likely to cancel plans five minutes before with “my social battery is dead”?",
+  "Who's most likely to get roasted in the group chat and take it personally?",
+  "Who's most likely to have a Pinterest board for a life they don't have yet?",
 
-  <!-- LANDING -->
-  <section id="view-landing" class="view active">
-    <div class="marquee">
-      <span class="spec-line">NO. 001 — PARTY EDITION</span>
-      <h1>MOST<br>LIKELY<br>TO</h1>
-      <p class="tag">the group decides. someone pays.</p>
-    </div>
-    <div class="stack bottom-dock">
-      <input id="landing-name" class="field" placeholder="your name" maxlength="20" />
-      <button id="btn-host" class="btn btn-primary">Host a game</button>
-      <div class="join-row">
-        <input id="landing-code" class="field code-field" placeholder="CODE" maxlength="4" />
-        <button id="btn-join" class="btn btn-secondary">Join</button>
-      </div>
-      <p id="landing-error" class="error"></p>
-    </div>
-  </section>
+  // party + going out
+  "Who's most likely to be the last one at the party?",
+  "Who's most likely to get way more confident after a couple drinks?",
+  "Who's most likely to cry at a party for no reason and be fine five minutes later?",
+  "Who's most likely to hear a stranger's whole life story in the bathroom line?",
+  "Who's most likely to start the dance floor all by themselves?",
+  "Who's most likely to take over the aux and clear the room?",
+  "Who's most likely to wake up with zero memory of a convo they swear happened?",
+  "Who's most likely to become best friends with the bouncer?",
+  "Who's most likely to lose their phone, keys, and wallet in one night?",
+  "Who's most likely to be talked about the second they leave the room?",
+  "Who's most likely to give a toast that turns into a TED Talk?",
+  "Who's most likely to say “one more drink” at midnight and still be here at 3?",
+  "Who's most likely to pull an Irish exit with zero goodbyes?",
+  "Who's most likely to get kicked out of a venue?",
+  "Who's most likely to turn a casual hang into a full-blown event?",
+  "Who's most likely to know every word to every song and still get them wrong?",
+  "Who's most likely to start a conga line and abandon it?",
+  "Who's most likely to fall asleep at their own party?",
+  "Who's most likely to order for the whole table and forget they're the one paying?",
+  "Who's most likely to Venmo request someone for $3?",
+  "Who's most likely to bring a plus-one nobody has ever met?",
+  "Who's most likely to start a rumor completely by accident?",
+  "Who's most likely to overshare with someone they met five minutes ago?",
+  "Who's most likely to run a karaoke night with zero experience?",
+  "Who's most likely to get a little too emotional during a slow song?",
+  "Who's most likely to start a dance battle?",
+  "Who's most likely to hype everyone up for a shot and then switch to water?",
+  "Who's most likely to get asked “where did you go?” and have no good answer?",
 
-  <!-- LOBBY -->
-  <section id="view-lobby" class="view">
-    <div class="topbar">
-      <span class="room-label">ROOM</span>
-      <span class="swing-tag">
-        <span class="swing-hole"></span>
-        <span id="lobby-code" class="room-code">----</span>
-      </span>
-    </div>
-    <h2 class="section-title">Who's in</h2>
-    <ul id="lobby-players" class="player-list"></ul>
+  // main character energy
+  "Who's most likely to survive on delusion and iced coffee alone?",
+  "Who's most likely to get lost with GPS on?",
+  "Who's most likely to start a cult by accident?",
+  "Who's most likely to win the lottery and be broke in a year?",
+  "Who's most likely to move across the country on a whim?",
+  "Who's most likely to say “five minutes away” while still in bed?",
+  "Who's most likely to get a tattoo they regret by next week?",
+  "Who's most likely to change their whole personality for a new crush?",
+  "Who's most likely to adopt a pet at 2am?",
+  "Who's most likely to quit their job in the most dramatic way possible?",
+  "Who's most likely to get famous and be insufferable about it?",
+  "Who's most likely to cry during a commercial?",
+  "Who's most likely to have one very specific hill they will die on?",
+  "Who's most likely to be late to their own birthday?",
+  "Who's most likely to turn a tiny lie into a whole saga?",
+  "Who's most likely to start a business with an unhinged name?",
+  "Who's most likely to survive the apocalypse?",
+  "Who's most likely to get caught lying about something dumb?",
+  "Who's most likely to blame Mercury retrograde for everything?",
+  "Who's most likely to ask “do you think they like me?” every ten minutes?",
+  "Who's most likely to have the most unhinged unpopular opinion?",
+  "Who's most likely to argue with a self-checkout machine?",
+  "Who's most likely to become the villain on a reality show?",
+  "Who's most likely to cry if we read their texts out loud?",
+  "Who's most likely to start therapy and come back with new vocabulary to use against us?",
+  "Who's most likely to get weirdly competitive at a board game?",
+  "Who's most likely to flip the table during Monopoly?",
+  "Who's most likely to have the best revenge arc?",
+  "Who's most likely to be delulu and honestly thriving?",
+  "Who's most likely to touch grass the least?",
+  "Who's most likely to wear last night's outfit and call it a vibe?",
+  "Who's most likely to talk their way into a VIP section?",
+  "Who's most likely to get into an argument with a stranger and win?",
+  "Who's most likely to become a millionaire off a terrible idea?",
+  "Who's most likely to see a notification from their ex and spiral?",
+  "Who's most likely to talk to themselves in public and not care?",
+  "Who's most likely to make a dramatic exit from a group chat?",
+];
 
-    <div id="host-controls-lobby" class="host-panel hidden">
-      <div class="divider"></div>
-      <h3 class="section-title small">Set this round's dare</h3>
-      <p class="hint">Say it out loud. Everyone should agree before you lock it in.</p>
-      <div id="dare-chip-list" class="chip-list"></div>
-      <div class="row-inline">
-        <input id="custom-dare-input" class="field" placeholder="or write your own dare..." maxlength="200" />
-        <button id="btn-add-dare" class="btn btn-ghost small">Add</button>
-      </div>
-      <button id="btn-lock-dare" class="btn btn-primary" disabled>Lock in dare</button>
-    </div>
+const DEFAULT_DARES = {
+  show: [
+    "Walk the room like it's a runway. Full strut, zero smiling.",
+    "Rate everyone's outfit out loud like a reality show judge.",
+    "Narrate the next 30 seconds of your life like a nature documentary.",
+    "Act out your last text conversation. Both sides. Full drama.",
+    "Freestyle a 20-second rap about the person on your left.",
+    "Deliver a villain monologue about why you're always late.",
+    "Talk like an influencer doing a “get ready with me” for 30 seconds.",
+    "Breakdance for 15 seconds. Falling counts.",
+    "Interpretive dance your current relationship status.",
+    "Lip sync a chorus the group picks. No shame allowed.",
+    "Give a 20-second Oscar speech for winning “Most Chaotic.”",
+    "Impersonate someone here until the group guesses who.",
+    "Make a slow-motion entrance like the main character.",
+    "Announce your own nickname like a stadium announcer.",
+    "Speak only in questions until the next round.",
+    "Use a British accent until the next round starts.",
+    "Do 10 pushups while sharing your most useless talent.",
+    "Sing “Happy Birthday” to the person on your right as a ballad.",
+    "Do your best impression of an angry chef judging the snack table.",
+    "Hype up the next person who speaks like they just won a championship.",
+    "Give a dramatic weather report about the vibe in this room.",
+    "Pitch a terrible startup idea like investors are watching.",
+    "Do a dramatic slow clap every time someone says your name this round.",
+    "Recreate the most embarrassing dance move you know.",
+    "Act like a nervous contestant on a dating show for 30 seconds.",
+  ],
+  phone: [
+    "Let the group scroll your camera roll for 10 seconds. No deleting.",
+    "Post a story with a caption the group writes. Delete it after 10 minutes.",
+    "Send a text the group writes to someone in your contacts. Keep it fun, not mean.",
+    "Read your last Google search out loud.",
+    "Show the group your screen time. No excuses.",
+    "Let the group pick your profile pic for the next hour.",
+    "Read the most recent thing in your notes app out loud.",
+    "Show the group your most embarrassing saved photo and tell the story.",
+    "Type “I think I'm” and read what autocomplete finishes. Three times, no editing.",
+    "Show the last five apps you opened.",
+    "Make your lock screen a selfie of someone in this room until tomorrow.",
+    "Send a dramatic voice memo to the group chat about what you ate today.",
+    "Record a 10-second video of your most dramatic reaction and send it to the group chat.",
+    "Reply to your oldest unread message right now, in front of everyone.",
+    "Play your most-listened song of the year and defend it.",
+    "Show the group your most recent Google Maps search.",
+    "Pick a contact and voice-note them a genuine compliment. Group listens.",
+    "Let someone pick a filter. Take a selfie with it and post it to your story.",
+    "Show everyone the last meme you sent and explain why it's funny.",
+    "Read out the funniest message in your phone right now. Names stay hidden.",
+    "Let the group write your next story caption. No edits.",
+    "Open your emoji keyboard's recents and explain the top five.",
+  ],
+  spill: [
+    "Tell the group your most embarrassing party moment.",
+    "Give your honest hot take on the last person you dated. Keep it fair.",
+    "Share your most irrational fear and defend it for 15 seconds.",
+    "Name your biggest ick. Everyone else says if they have it too.",
+    "Reveal one red flag you have. The group rates it 1 to 10.",
+    "Tell the worst lie you've ever told.",
+    "Share the pettiest reason you've ever stopped talking to someone.",
+    "Say one thing you secretly love about everyone in the room.",
+    "Confess a guilty-pleasure song. Everyone sings along.",
+    "Name who you'd call first in an emergency, and who you'd never call.",
+    "Tell your worst date story in 60 seconds.",
+    "Admit one thing you've pretended to like to impress someone.",
+    "Give everyone in the room a one-word nickname. No repeats.",
+    "Rate everyone's rizz from 1 to 10. Be honest, be nice.",
+    "Tell the room your most unpopular opinion and defend it.",
+    "Spill the most embarrassing thing you've ever done for a crush.",
+    "Name a celebrity crush and defend the choice in one dramatic sentence.",
+    "Share the worst advice you've ever given.",
+    "Tell your most chaotic childhood memory.",
+    "Tell the group what you're most delulu about.",
+    "Share what your friends would say your biggest flaw is.",
+    "Describe your ideal Saturday night in 20 seconds. Zero dull details.",
+    "Share the last thing that made you laugh so hard you cried.",
+    "Tell us your most “I thought nobody saw that” moment.",
+    "Share a secret talent nobody here knows about.",
+  ],
+  spicy: [
+    "Give your best pickup line to the person on your left. Fully in character.",
+    "Hold eye contact with someone who's down for 15 seconds. No laughing.",
+    "Do your best baddie strut across the room and back.",
+    "Run a 15-second compliment battle with someone: no repeats, no stopping.",
+    "Do your impression of someone flirting badly.",
+    "Wink at everyone in the room, one at a time, in slow motion.",
+    "Serenade someone with the first line of any love song.",
+    "Rate everyone's smile from 1 to 10.",
+    "Deliver the most dramatic romantic line you can think of to the person across from you.",
+    "Teach the room your best rizz move in 20 seconds.",
+    "Whisper the back of a cereal box like it's a love poem.",
+    "Pick two people and write their first-date plan in 20 seconds.",
+    "Give your top three turn-ons and top three icks. PG-13 only.",
+    "Rate your own rizz from 1 to 10. The room shouts the real number.",
+    "Pitch someone here on a first date: where you'd go, why they'd say yes.",
+    "Slow dance with a chair for 20 seconds. Make it romantic.",
+    "Deliver a breakup speech to your phone. Make it dramatic.",
+    "Whisper only until the next round.",
+    "Tell someone here what makes them unfairly attractive, in one sentence.",
+    "Reenact “love at first sight” with an object in the room.",
+    "Act out your ideal meet-cute with someone of your choice.",
+    "Give a convincing “I'm not like other people” speech while winking.",
+    "Pick a fake plus-one and introduce them to the room with a full backstory.",
+    "Read the snack labels in your sultriest voice.",
+  ],
+};
 
-    <div id="non-host-waiting" class="hint center hidden">Waiting for the host to set this round's dare...</div>
-  </section>
+const DARE_LABELS = {
+  show: "Show out",
+  phone: "Phone out",
+  spill: "Spill it",
+  spicy: "Low-key spicy",
+  custom: "From the room",
+};
 
-  <!-- DARE CONFIRM (all players see this before the round starts) -->
-  <section id="view-dare-confirm" class="view">
-    <p class="eyebrow">If you get voted, you must...</p>
-    <p id="dare-confirm-text" class="big-dare"></p>
-    <div class="bottom-dock">
-      <button id="btn-start-round" class="btn btn-primary host-only hidden">Everyone agrees — start the question</button>
-      <p class="hint center non-host-only hidden">Waiting for the host to start the round...</p>
-    </div>
-  </section>
-
-  <!-- QUESTION / VOTE -->
-  <section id="view-question" class="view">
-    <div class="topbar">
-      <span id="vote-progress" class="room-label">0 / 0 voted</span>
-      <span class="timer-chip"><span class="rec-dot" aria-hidden="true"></span><span id="timer" class="timer">20</span></span>
-    </div>
-    <p id="question-text" class="question"></p>
-    <div id="vote-grid" class="vote-grid"></div>
-    <p id="voted-note" class="hint center hidden">Vote locked in. Waiting on the room...</p>
-  </section>
-
-  <!-- RESULTS -->
-  <section id="view-results" class="view">
-    <p class="eyebrow">The group has spoken</p>
-    <h2 id="winner-name" class="winner-name"></h2>
-    <div id="results-bars" class="bars"></div>
-    <div class="divider"></div>
-    <p class="eyebrow">The dare</p>
-    <p id="results-dare" class="big-dare small"></p>
-    <div class="bottom-dock">
-      <button id="btn-next-round" class="btn btn-primary host-only hidden">Next round</button>
-      <button id="btn-end-game" class="btn btn-ghost host-only hidden">End game</button>
-      <p class="hint center non-host-only hidden">Waiting for the host to continue...</p>
-    </div>
-  </section>
-
-  <!-- ENDED -->
-  <section id="view-ended" class="view">
-    <p class="eyebrow">Final scores</p>
-    <h2 class="section-title">Leaderboard</h2>
-    <ol id="final-scores" class="score-list"></ol>
-    <div class="bottom-dock">
-      <button id="btn-play-again" class="btn btn-primary">Back to start</button>
-    </div>
-  </section>
-
-</div>
-
-<script src="/socket.io/socket.io.js"></script>
-<script src="app.js"></script>
-</body>
-</html>
+module.exports = { DEFAULT_QUESTIONS, DEFAULT_DARES, DARE_LABELS };
