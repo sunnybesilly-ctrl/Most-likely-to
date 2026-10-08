@@ -54,10 +54,12 @@
     </div>
     <h2 class="section-title">Who's in</h2>
     <ul id="lobby-players" class="player-list"></ul>
-    <p class="hint">Every round, everyone votes on the dare. Whoever made the room just hits start.</p>
+    <p class="hint">Every round the whole room votes the dare. Pick your 2 favorites first and the room's top picks come back every round.</p>
+
+    <button id="btn-favs" class="btn btn-secondary favs-btn">Pick your 2 favorite dares</button>
 
     <details class="add-details" open>
-      <summary>Add your own dare or question</summary>
+      <summary>Write your own dare or question</summary>
       <div class="add-box">
         <div class="seg">
           <button type="button" class="seg-btn on" data-kind="dare">Dare</button>
@@ -79,49 +81,101 @@
     </div>
   </section>
 
-  <!-- DARE VOTE (everyone picks together) -->
+  <!-- FAVORITES (pick your 2) -->
+  <section id="view-favs" class="view">
+    <div class="topbar">
+      <span class="room-label">Your favorites</span>
+      <span id="favs-count" class="score-pill">0 / 2</span>
+    </div>
+    <h2 class="section-title">Pick your 2 favorite dares</h2>
+    <p class="hint">The room's top picks come back every round. Fresh dares get mixed in too, so the list keeps growing.</p>
+    <div id="favs-tabs" class="tabs"></div>
+    <ul id="favs-list" class="fav-list"></ul>
+    <div class="sticky-dock">
+      <button id="btn-favs-done" class="btn btn-primary">Done</button>
+    </div>
+  </section>
+
+  <!-- DARE BOARD (everyone votes together) -->
   <section id="view-dare" class="view">
     <div class="topbar">
-      <span id="dare-progress" class="room-label">0 / 0 voted</span>
-      <span class="timer-chip"><span class="rec-dot" aria-hidden="true"></span><span class="timer">12</span></span>
+      <span id="dare-progress" class="room-label">0 / 0 locked in</span>
+      <span class="timer-chip"><span class="rec-dot" aria-hidden="true"></span><span class="timer">60</span></span>
     </div>
+    <div class="tbar"><i></i></div>
     <p id="dare-round" class="eyebrow">Round 01</p>
-    <h2 class="section-title">Pick the dare</h2>
+    <h2 class="section-title">Vote the dare</h2>
+    <p class="hint tight">Tap one. Everyone sees every vote live. When the whole room is locked in, we go early.</p>
+    <p id="dare-closing" class="closing hidden">Everyone's in. Locking it in...</p>
     <div id="dare-options" class="dare-list"></div>
     <button id="btn-reshuffle" class="dare-row dare-veto">
       <span class="dare-body">
         <span class="dare-tag">Veto</span>
         <span class="dare-text">None of these. Reshuffle.</span>
+        <span id="reshuffle-chips" class="chips"></span>
       </span>
       <span id="reshuffle-count" class="dare-count">0</span>
     </button>
+    <div id="dare-roster" class="roster"></div>
+
+    <div class="write-dare">
+      <label class="write-label" for="write-dare-input">Write a dare. It joins this vote.</label>
+      <div class="row-inline">
+        <input id="write-dare-input" class="field add-input" placeholder="type a dare..." maxlength="160" autocomplete="off" />
+        <button id="btn-write-dare" class="btn btn-secondary small">Add</button>
+      </div>
+      <p id="write-note" class="hint"></p>
+    </div>
   </section>
 
-  <!-- DARE LOCKED (opt-out window) -->
-  <section id="view-lock" class="view">
+  <!-- DARE LOCKED: IN or OUT -->
+  <section id="view-agree" class="view">
     <div class="topbar">
-      <span id="lock-progress" class="room-label">0 sitting out</span>
-      <span class="timer-chip"><span class="rec-dot" aria-hidden="true"></span><span class="timer">8</span></span>
+      <span id="agree-progress" class="room-label">0 / 0 answered</span>
+      <span class="timer-chip"><span class="rec-dot" aria-hidden="true"></span><span class="timer">25</span></span>
     </div>
-    <p class="eyebrow">Locked in. If the group picks you:</p>
-    <p id="lock-tag" class="dare-tag lock-tag"></p>
-    <p id="lock-dare" class="big-dare"></p>
+    <div class="tbar"><i></i></div>
+    <p class="eyebrow">The room picked. Are you doing it?</p>
+    <p id="agree-tag" class="dare-tag lock-tag"></p>
+    <p id="agree-dare" class="big-dare"></p>
+    <div id="agree-roster" class="roster big"></div>
+    <p id="agree-closing" class="closing hidden">Everyone answered. Here we go...</p>
     <div class="bottom-dock">
-      <p class="hint center">Not doing it? Sit this round out. You can't get picked, and you still vote.</p>
-      <button id="btn-optout" class="btn btn-ghost">I'm out</button>
+      <div class="split">
+        <button id="btn-in" class="btn btn-ghost btn-in">I'm in</button>
+        <button id="btn-out" class="btn btn-ghost btn-out">I'm out</button>
+      </div>
+      <p class="hint center">Out means you can't get picked this round, and you still vote. No answer counts as in.</p>
     </div>
+  </section>
+
+  <!-- COUNTDOWN -->
+  <section id="view-countdown" class="view">
+    <div class="topbar">
+      <span class="room-label">Get ready</span>
+      <span class="timer-chip"><span class="rec-dot" aria-hidden="true"></span><span class="timer">5</span></span>
+    </div>
+    <div class="tbar"><i></i></div>
+    <p class="eyebrow center">The question is coming</p>
+    <div id="count-big" class="count-big">5</div>
+    <p class="hint center">On the line</p>
+    <p id="count-dare" class="big-dare small center"></p>
+    <p id="count-sitting" class="hint center"></p>
   </section>
 
   <!-- QUESTION / VOTE -->
   <section id="view-question" class="view">
     <div class="topbar">
       <span id="vote-progress" class="room-label">0 / 0 voted</span>
-      <span class="timer-chip"><span class="rec-dot" aria-hidden="true"></span><span class="timer">15</span></span>
+      <span class="timer-chip"><span class="rec-dot" aria-hidden="true"></span><span class="timer">30</span></span>
     </div>
+    <div class="tbar"><i></i></div>
     <p id="question-text" class="question"></p>
+    <p id="question-hint" class="qhint"></p>
     <div id="vote-grid" class="vote-grid"></div>
     <p id="sit-note" class="hint center hidden">You're sitting this one out. You can still vote.</p>
     <p id="voted-note" class="hint center hidden">Vote locked in. Waiting on the room...</p>
+    <div id="vote-roster" class="roster"></div>
   </section>
 
   <!-- RESULTS -->
@@ -133,8 +187,10 @@
     <p class="eyebrow">The dare</p>
     <p id="results-dare" class="big-dare small"></p>
 
+    <button id="btn-favs-results" class="btn btn-ghost favs-btn">Edit my 2 favorite dares</button>
+
     <details class="add-details">
-      <summary>Add your own dare or question</summary>
+      <summary>Write your own dare or question</summary>
       <div class="add-box">
         <div class="seg">
           <button type="button" class="seg-btn on" data-kind="dare">Dare</button>
