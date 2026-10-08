@@ -18,8 +18,16 @@ let session = (() => {
 let seen = LS.get("mlt.seen") || { q: [], d: [] };
 let state = null;
 let lastNoticeKey = null;
-let lastDareKey = null;
 let lastResultsRound = null;
+let lastPhase = null;
+let boardRound = null;
+let boardIds = new Set();
+
+// favorites picker
+let inFavs = false;
+let catalog = null;
+let favTab = "show";
+let myFavs = [];
 
 function saveSession(patch) {
   session = { ...(session || {}), ...patch, ts: Date.now() };
@@ -62,19 +70,69 @@ function toast(text) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.add("hidden"), 3200);
 }
-function setTimer(n) {
-  document.querySelectorAll(".timer").forEach((el) => (el.textContent = Math.max(n, 0)));
-  document.querySelectorAll(".timer-chip").forEach((c) => c.classList.toggle("urgent", n <= 5));
+function buzz(ms) {
+  try { if (navigator.vibrate && document.visibilityState === "visible") navigator.vibrate(ms); } catch {}
 }
+
+// ---------- the clock: digits + draining bar + panic mode ----------
+const TIMED = ["dare", "agree", "countdown", "question"];
+
+function setTimer(n, phase) {
+  const hot = phase === "dare" || phase === "agree" || phase === "question";
+  const warn = hot && n <= 10 && n > 5;
+  const urgent = (hot && n <= 5 && n > 0) || phase === "countdown";
+  document.querySelectorAll(".timer").forEach((el) => (el.textContent = Math.max(n, 0)));
+  document.querySelectorAll(".timer-chip, .tbar").forEach((el) => {
+    el.classList.toggle("warn", warn);
+    el.classList.toggle("urgent", urgent);
+  });
+  document.body.classList.toggle("urgent", hot && n <= 5 && n > 0);
+}
+
+// the bar glides to empty over exactly the time that's left
+function syncBar(t) {
+  document.querySelectorAll(".tbar i").forEach((bar) => {
+    const frac = t.total ? Math.min(1, t.remainingMs / (t.total * 1000)) : 0;
+    bar.style.transition = "none";
+    bar.style.width = frac * 100 + "%";
+    void bar.offsetWidth;
+    if (t.remainingMs > 0) {
+      bar.style.transition = `width ${t.remainingMs}ms linear`;
+      bar.style.width = "0%";
+    }
+  });
+}
+
+function setBig(n) {
+  const el = $("count-big");
+  el.textContent = Math.max(n, 0);
+  el.classList.remove("pop");
+  void el.offsetWidth;
+  el.classList.add("pop");
+}
+
 function readyLabel(done, total) {
   const you = state && state.you && state.you.ready;
   return `${you ? "Ready. Tap to undo" : "Ready for next round"} (${done}/${total})`;
 }
 function updateProgress(phase, done, total) {
-  if (phase === "dare") $("dare-progress").textContent = `${done} / ${total} voted`;
-  if (phase === "lock") $("lock-progress").textContent = `${done} sitting out`;
+  if (phase === "dare") $("dare-progress").textContent = `${done} / ${total} locked in`;
+  if (phase === "agree") $("agree-progress").textContent = `${done} / ${total} answered`;
   if (phase === "question") $("vote-progress").textContent = `${done} / ${total} voted`;
   if (phase === "results") $("btn-ready").textContent = readyLabel(done, total);
+}
+
+function renderRoster(el, roster, meId) {
+  el.innerHTML = (roster || [])
+    .map((p) => {
+      const cls = ["rchip"];
+      if (p.status === "in") cls.push("in");
+      else if (p.status === "out") cls.push("out");
+      else if (p.done) cls.push("done");
+      if (p.id === meId) cls.push("me");
+      return `<span class="${cls.join(" ")}">${esc(p.name)}</span>`;
+    })
+    .join("");
 }
 
 // ---------- keep the phone awake + connected ----------
@@ -102,7 +160,16 @@ if (qp.get("code")) $("landing-code").value = qp.get("code").toUpperCase().slice
 function resume() {
   socket.emit(
     "session:resume",
-    { code: session.code, pid: session.pid, name: session.name, score: session.score || 0, wasHost: !!session.isHost, seenQ: seen.q, seenD: seen.d },
+    {
+      code: session.code,
+      pid: session.pid,
+      name: session.name,
+      score: session.score || 0,
+      wasHost: !!session.isHost,
+      favs: session.favs || [],
+      seenQ: seen.q,
+      seenD: seen.d,
+    },
     (res) => {
       if (!res || !res.ok) {
         clearSession();
@@ -132,7 +199,7 @@ $("btn-create").addEventListener("click", () => {
   resetSeen();
   socket.emit("room:create", { name }, (res) => {
     if (!res || !res.ok) return landingError((res && res.error) || "Couldn't create the room.");
-    saveSession({ pid: res.pid, code: res.code, name, score: 0 });
+    saveSession({ pid: res.pid, code: res.code, name, score: 0, favs: [] });
     keepAwake();
   });
 });
@@ -146,7 +213,7 @@ $("btn-join").addEventListener("click", () => {
   resetSeen();
   socket.emit("player:join", { code, name }, (res) => {
     if (!res || !res.ok) return landingError((res && res.error) || "Couldn't join the room.");
-    saveSession({ pid: res.pid, code: res.code, name, score: 0 });
+    saveSession({ pid: res.pid, code: res.code, name, score: 0, favs: [] });
     keepAwake();
   });
 });
@@ -155,14 +222,18 @@ function goHome() {
   socket.emit("player:leave");
   clearSession();
   state = null;
-  lastDareKey = null;
+  inFavs = false;
+  boardRound = null;
   lastResultsRound = null;
+  lastPhase = null;
+  document.body.classList.remove("urgent");
   show("view-landing");
 }
 
 // ---------- state in ----------
 socket.on("state", (s) => {
   state = s;
+  myFavs = s.you.favs || [];
   remember(s);
   if (s.notice && s.notice.id !== lastNoticeKey) {
     lastNoticeKey = s.notice.id;
@@ -173,27 +244,50 @@ socket.on("state", (s) => {
 
 socket.on("tick", (t) => {
   if (!state || t.phase !== state.phase) return;
-  setTimer(t.timeLeft);
+  state.timer = { left: t.timeLeft, total: t.totalMs / 1000, remainingMs: t.remainingMs, closing: t.closing };
+  setTimer(t.timeLeft, t.phase);
   updateProgress(t.phase, t.done, t.total);
+  if (t.phase === "countdown") { setBig(t.timeLeft); buzz(45); }
+  else if (TIMED.includes(t.phase) && t.timeLeft <= 5 && t.timeLeft > 0) buzz(25);
 });
 
 // remember what this phone has seen so a restarted server can avoid repeats
 function remember(s) {
   let changed = false;
-  if (s.question && !seen.q.includes(s.question)) { seen.q.push(s.question); changed = true; }
-  const d = s.lockedDare;
-  if (d && d.cat !== "custom" && !seen.d.includes(d.text)) { seen.d.push(d.text); changed = true; }
+  if (s.question && !seen.q.includes(s.question.text)) { seen.q.push(s.question.text); changed = true; }
+  if (s.dare) {
+    for (const o of s.dare.options) {
+      if (o.kind !== "written" && !seen.d.includes(o.text)) { seen.d.push(o.text); changed = true; }
+    }
+  }
   if (changed) LS.set("mlt.seen", seen);
-  saveSession({ code: s.code, name: s.you.name, score: s.you.score, isHost: s.you.isHost });
+  saveSession({ code: s.code, name: s.you.name, score: s.you.score, isHost: s.you.isHost, favs: s.you.favs || [] });
 }
 
 function render(s) {
   if (s.phase !== "results") lastResultsRound = null;
-  setTimer(s.timeLeft);
+  if (inFavs) {
+    if (s.phase === "lobby" || s.phase === "results") { renderFavs(); return; }
+    inFavs = false;
+    toast("Game's moving. Your picks are saved.");
+  }
+
+  const t = s.timer || { left: 0, total: 0, remainingMs: 0, closing: false };
+  setTimer(t.left, s.phase);
+  syncBar(t);
+
+  // phase-change haptics: a heavy buzz when the question lands
+  if (lastPhase !== s.phase) {
+    if (s.phase === "question") buzz(260);
+    if (s.phase === "agree") buzz(120);
+  }
+  lastPhase = s.phase;
+
   switch (s.phase) {
     case "lobby": return renderLobby(s);
     case "dare": return renderDare(s);
-    case "lock": return renderLock(s);
+    case "agree": return renderAgree(s);
+    case "countdown": return renderCountdown(s);
     case "question": return renderQuestion(s);
     case "results": return renderResults(s);
     case "ended": return renderEnded(s);
@@ -210,6 +304,7 @@ function renderLobby(s) {
     .join("");
   applyRoles("view-lobby", s.you.isHost);
   $("btn-start").disabled = s.players.filter((p) => p.online).length < 2;
+  $("btn-favs").textContent = `Pick your 2 favorite dares (${myFavs.length}/2)`;
   show("view-lobby");
 }
 
@@ -227,7 +322,70 @@ $("btn-copy-link").addEventListener("click", async () => {
   }
 });
 
-// ---------- add your own (lobby + results) ----------
+// ---------- favorites ----------
+function openFavs() {
+  inFavs = true;
+  socket.emit("dares:list", {}, (res) => {
+    if (res && res.ok) catalog = res.list;
+    renderFavs();
+  });
+  renderFavs();
+}
+function renderFavs() {
+  const list = catalog || [];
+  const order = ["show", "phone", "spill", "spicy", "custom"];
+  const present = order.filter((c) => list.some((d) => d.cat === c));
+  if (!present.includes(favTab)) favTab = present[0] || "show";
+
+  $("favs-tabs").innerHTML = present
+    .map((c) => {
+      const label = (list.find((d) => d.cat === c) || {}).label || c;
+      return `<button type="button" class="tab${c === favTab ? " on" : ""}" data-tab="${c}">${esc(label)}</button>`;
+    })
+    .join("");
+
+  $("favs-list").innerHTML = list
+    .filter((d) => d.cat === favTab)
+    .map((d) => {
+      const on = myFavs.includes(d.id);
+      return `<li><button type="button" class="fav-row${on ? " on" : ""}" data-id="${esc(d.id)}"><span class="star">${on ? "&#9733;" : "&#9734;"}</span><span class="fav-text">${esc(d.text)}${d.by ? `<em> from ${esc(d.by)}</em>` : ""}</span></button></li>`;
+    })
+    .join("");
+
+  $("favs-count").textContent = `${myFavs.length} / 2`;
+  show("view-favs");
+}
+function toggleFav(id) {
+  let f = [...myFavs];
+  if (f.includes(id)) f = f.filter((x) => x !== id);
+  else {
+    f.push(id);
+    if (f.length > 2) { f.shift(); toast("Swapped out your oldest pick."); }
+  }
+  myFavs = f;
+  if (state) state.you.favs = f;
+  saveSession({ favs: f });
+  renderFavs();
+  socket.emit("fav:set", { ids: f });
+}
+$("btn-favs").addEventListener("click", openFavs);
+$("btn-favs-results").addEventListener("click", openFavs);
+$("favs-tabs").addEventListener("click", (e) => {
+  const b = e.target.closest(".tab");
+  if (!b) return;
+  favTab = b.dataset.tab;
+  renderFavs();
+});
+$("favs-list").addEventListener("click", (e) => {
+  const b = e.target.closest(".fav-row");
+  if (b) toggleFav(b.dataset.id);
+});
+$("btn-favs-done").addEventListener("click", () => {
+  inFavs = false;
+  if (state) render(state);
+});
+
+// ---------- write your own (lobby + results) ----------
 document.querySelectorAll(".add-box").forEach((box) => {
   let kind = "dare";
   const input = box.querySelector(".add-input");
@@ -246,7 +404,7 @@ document.querySelectorAll(".add-box").forEach((box) => {
     socket.emit(kind === "dare" ? "room:addDare" : "room:addQuestion", { text }, (res) => {
       if (res && res.ok) {
         input.value = "";
-        note.textContent = kind === "dare" ? "In the pile. It'll show up as an option." : "In the deck. Coming up soon.";
+        note.textContent = kind === "dare" ? "In the pile. It'll show up on the board." : "In the deck. Coming up soon.";
       } else {
         note.textContent = (res && res.error) || "Couldn't add that.";
       }
@@ -256,22 +414,37 @@ document.querySelectorAll(".add-box").forEach((box) => {
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
 });
 
-// ---------- dare vote ----------
+// ---------- the dare board ----------
+function shortName(n) { return n.length > 8 ? n.slice(0, 8) : n; }
+
 function renderDare(s) {
   const d = s.dare;
+  const me = s.you.id;
   $("dare-round").textContent = `Round ${String(s.round).padStart(2, "0")}`;
-  const key = s.round + "|" + d.options.map((o) => o.id + o.text).join("|");
-  const enter = key !== lastDareKey;
-  lastDareKey = key;
   const total = Math.max(s.progress.total, 1);
 
+  // whole new board = everything animates in; otherwise only brand-new rows flash
+  const ids = d.options.map((o) => o.id);
+  const freshBoard = boardRound !== s.round || ids.every((id) => !boardIds.has(id));
+  const known = boardIds;
+  boardRound = s.round;
+  boardIds = new Set(ids);
+
   $("dare-options").innerHTML = d.options
-    .map(
-      (o, i) => `<button class="dare-row${enter ? " enter" : ""}${d.myVote === o.id ? " picked" : ""}" data-id="${o.id}" style="--i:${i};--p:${Math.round((o.votes / total) * 100)}%">
-        <span class="dare-body"><span class="dare-tag">${esc(o.label)}${o.by ? " from " + esc(o.by) : ""}</span><span class="dare-text">${esc(o.text)}</span></span>
+    .map((o, i) => {
+      const cls = ["dare-row", "kind-" + o.kind];
+      if (d.myVote === o.id) cls.push("picked");
+      if (freshBoard) cls.push("enter");
+      else if (!known.has(o.id)) cls.push("new");
+      const tag = o.kind === "written" ? `From the room${o.by ? " · " + esc(o.by) : ""}` : esc(o.label);
+      const chips = o.voters
+        .map((v) => `<span class="chip${v.id === me ? " me" : ""}">${esc(shortName(v.name))}</span>`)
+        .join("");
+      return `<button class="${cls.join(" ")}" data-id="${esc(o.id)}" style="--i:${i};--p:${Math.round((o.votes / total) * 100)}%">
+        <span class="dare-body"><span class="dare-tag">${tag}</span><span class="dare-text">${esc(o.text)}</span>${chips ? `<span class="chips">${chips}</span>` : ""}</span>
         <span class="dare-count">${o.votes}</span>
-      </button>`
-    )
+      </button>`;
+    })
     .join("");
 
   const veto = $("btn-reshuffle");
@@ -279,7 +452,12 @@ function renderDare(s) {
   veto.classList.toggle("picked", d.myVote === "reshuffle");
   veto.style.setProperty("--p", Math.round((d.reshuffleVotes / total) * 100) + "%");
   $("reshuffle-count").textContent = d.reshuffleVotes;
+  $("reshuffle-chips").innerHTML = d.reshuffleVoters
+    .map((v) => `<span class="chip${v.id === me ? " me" : ""}">${esc(shortName(v.name))}</span>`)
+    .join("");
 
+  renderRoster($("dare-roster"), s.roster, me);
+  $("dare-closing").classList.toggle("hidden", !s.timer.closing);
   updateProgress("dare", s.progress.done, s.progress.total);
   show("view-dare");
 }
@@ -296,29 +474,60 @@ $("dare-options").addEventListener("click", (e) => {
 });
 $("btn-reshuffle").addEventListener("click", () => voteDare("reshuffle"));
 
-// ---------- dare locked / opt-out ----------
-function renderLock(s) {
-  const d = s.lockedDare;
-  $("lock-tag").textContent = d.label + (d.by ? " from " + d.by : "");
-  $("lock-dare").textContent = d.text;
-  const out = s.you.sittingOut;
-  $("btn-optout").textContent = out ? "I'm back in" : "I'm out";
-  $("btn-optout").classList.toggle("on", out);
-  updateProgress("lock", s.progress.done, s.progress.total);
-  show("view-lock");
+// type a dare right on the board: it pops onto everyone's screen and joins the vote
+function sendWrite() {
+  const input = $("write-dare-input");
+  const text = input.value.trim();
+  if (!text) return;
+  socket.emit("room:addDare", { text }, (res) => {
+    const note = $("write-note");
+    if (res && res.ok) {
+      input.value = "";
+      note.textContent = res.live ? "Added. It's on everyone's board now." : "Added. The board's full, so it's queued for the next round.";
+    } else {
+      note.textContent = (res && res.error) || "Couldn't add that.";
+    }
+  });
 }
-$("btn-optout").addEventListener("click", () => {
+$("btn-write-dare").addEventListener("click", sendWrite);
+$("write-dare-input").addEventListener("keydown", (e) => { if (e.key === "Enter") sendWrite(); });
+
+// ---------- dare locked: in or out ----------
+function paintAnswer(answer) {
+  $("btn-in").classList.toggle("on", answer === "in");
+  $("btn-out").classList.toggle("on", answer === "out");
+}
+function renderAgree(s) {
+  const d = s.lockedDare;
+  $("agree-tag").textContent = d.label + (d.by ? " from " + d.by : "");
+  $("agree-dare").textContent = d.text;
+  renderRoster($("agree-roster"), s.roster, s.you.id);
+  paintAnswer(s.you.answer);
+  $("agree-closing").classList.toggle("hidden", !s.timer.closing);
+  updateProgress("agree", s.progress.done, s.progress.total);
+  show("view-agree");
+}
+function answer(a) {
   if (!state) return;
-  const out = !state.you.sittingOut;
-  state.you.sittingOut = out;
-  $("btn-optout").textContent = out ? "I'm back in" : "I'm out";
-  $("btn-optout").classList.toggle("on", out);
-  socket.emit("dare:optout", { out });
-});
+  state.you.answer = a;
+  paintAnswer(a);
+  socket.emit("dare:answer", { answer: a });
+}
+$("btn-in").addEventListener("click", () => answer("in"));
+$("btn-out").addEventListener("click", () => answer("out"));
+
+// ---------- countdown ----------
+function renderCountdown(s) {
+  setBig(s.timer.left);
+  $("count-dare").textContent = s.lockedDare.text;
+  $("count-sitting").textContent = s.sitting && s.sitting.length ? `Sitting out: ${s.sitting.join(", ")}` : "Everyone's in.";
+  show("view-countdown");
+}
 
 // ---------- question / vote ----------
 function renderQuestion(s) {
-  $("question-text").textContent = s.question;
+  $("question-text").textContent = s.question.text;
+  $("question-hint").textContent = s.question.hint;
   const voted = !!s.myVote;
   $("vote-grid").innerHTML = s.targets
     .map(
@@ -327,6 +536,7 @@ function renderQuestion(s) {
     .join("");
   $("voted-note").classList.toggle("hidden", !voted);
   $("sit-note").classList.toggle("hidden", voted || !s.you.sittingOut);
+  renderRoster($("vote-roster"), s.roster, s.you.id);
   updateProgress("question", s.progress.done, s.progress.total);
   show("view-question");
 }
@@ -368,9 +578,7 @@ function renderResults(s) {
     );
   }
 
-  $("results-dare").textContent = r.winners.length
-    ? s.lockedDare.text
-    : "Nobody got picked. Dare cancelled.";
+  $("results-dare").textContent = r.winners.length ? s.lockedDare.text : "Nobody got picked. Dare cancelled.";
 
   applyRoles("view-results", s.you.isHost);
   updateProgress("results", s.progress.done, s.progress.total);
