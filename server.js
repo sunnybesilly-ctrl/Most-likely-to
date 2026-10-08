@@ -3,7 +3,7 @@ const http = require("http");
 const path = require("path");
 const { Server } = require("socket.io");
 const { customAlphabet, nanoid } = require("nanoid");
-const { DEFAULT_QUESTIONS, DEFAULT_DARES, DARE_LABELS } = require("./data");
+const { DEFAULT_QUESTIONS, DEFAULT_HINT, DEFAULT_DARES, DARE_LABELS } = require("./data");
 
 const app = express();
 const server = http.createServer(app);
@@ -14,15 +14,32 @@ app.use(express.static(path.join(__dirname, "public")));
 
 const makeCode = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 4);
 
-const DARE_SECONDS = 12;
-const LOCK_SECONDS = 8;
-const QUESTION_SECONDS = 15;
+// ---------- timing ----------
+const DARE_SECONDS = 60; // shared dare board
+const AGREE_SECONDS = 25; // "I'm in / I'm out" on the locked dare
+const COUNTDOWN_SECONDS = 5; // big centered "question incoming"
+const QUESTION_SECONDS = 30; // time to answer
+const CLOSE_MS = 3000; // once everyone's locked in, a short window to change your mind
+
+// ---------- board rules ----------
 const MAX_RESHUFFLES = 2;
+const BASE_SLOTS = 4; // room favorites + fresh dares always add up to this
+const FAV_SLOTS = 2; // top room favorites shown every round
+const MAX_WRITTEN = 4; // written dares shown per board
+const COOLDOWN_ROUNDS = 3; // a performed dare sits out for a few rounds
 const MAX_PLAYERS = 20;
 const MAX_CUSTOM = 60;
 const GRACE_MS = 20 * 60 * 1000; // how long a dropped phone keeps its seat
+const ACTIVE = ["dare", "agree", "countdown", "question", "results"];
+
+// ---------- dare catalog ----------
 const DARE_CATS = Object.keys(DEFAULT_DARES);
-const ACTIVE = ["dare", "lock", "question", "results"];
+const DARE_INDEX = new Map(); // id -> { id, text, cat, by }
+const DARE_BY_CAT = {};
+for (const cat of DARE_CATS) {
+  DARE_BY_CAT[cat] = DEFAULT_DARES[cat].map((text, i) => ({ id: `${cat}:${i}`, text, cat, by: null }));
+  DARE_BY_CAT[cat].forEach((d) => DARE_INDEX.set(d.id, d));
+}
 
 // roomCode -> room
 const rooms = new Map();
@@ -47,8 +64,6 @@ function normalizeQuestion(t) {
 }
 
 function newRoom(code) {
-  const dareDecks = {};
-  for (const c of DARE_CATS) dareDecks[c] = shuffle(DEFAULT_DARES[c]);
   return {
     code,
     creatorId: null,
@@ -57,25 +72,40 @@ function newRoom(code) {
     hostClaimed: false,
     players: new Map(), // playerId -> { id, name, score, passes, online, socketId, lastSeen }
     order: [],
-    phase: "lobby", // lobby | dare | lock | question | results | ended
+    phase: "lobby", // lobby | dare | agree | countdown | question | results | ended
     round: 0,
+
     questionDeck: shuffle(DEFAULT_QUESTIONS),
     customQuestions: [],
-    dareDecks,
-    customDares: [],
-    dareOptions: [],
-    dareVotes: new Map(), // playerId -> optionId | "reshuffle"
+
+    presented: new Set(), // default dare ids already put on a board
+    customDares: [], // { id, text, by, n, shown }
+    customN: 0,
+    boardVotes: new Map(), // dareId -> total votes ever received on boards
+    playedRound: new Map(), // dareId -> round it was performed
+    favs: new Map(), // playerId -> [dareId, dareId]
+
+    dareOptions: [], // [{ id, text, cat, by, kind: fav|written|fresh }]
+    dareVotes: new Map(), // playerId -> dareId | "reshuffle"
     reshuffles: 0,
     lockedDare: null,
     optOuts: new Set(),
-    question: null,
+    agreeIn: new Set(),
+
+    question: null, // { q, h }
     targets: [],
     votes: new Map(), // playerId -> targetId
     ready: new Set(),
     results: null,
+
     timer: null,
-    timeLeft: 0,
+    endsAt: 0,
     timerTotal: 0,
+    timeLeft: 0,
+    closing: false,
+    closeAt: 0,
+    onEnd: null,
+
     notice: null,
     noticeId: 0,
   };
@@ -90,6 +120,10 @@ const readyNeeded = (room) => Math.floor(onlinePlayers(room).length / 2) + 1;
 function everyoneVoted(room, map) {
   const on = onlinePlayers(room);
   return on.length > 0 && on.every((p) => map.has(p.id));
+}
+function everyoneAnswered(room) {
+  const on = onlinePlayers(room);
+  return on.length > 0 && on.every((p) => room.optOuts.has(p.id) || room.agreeIn.has(p.id));
 }
 
 function uniqueName(room, name, pid) {
@@ -121,7 +155,9 @@ function removePlayer(room, pid) {
   room.dareVotes.delete(pid);
   room.votes.delete(pid);
   room.optOuts.delete(pid);
+  room.agreeIn.delete(pid);
   room.ready.delete(pid);
+  room.favs.delete(pid);
 }
 
 function migrateHost(room) {
@@ -129,38 +165,118 @@ function migrateHost(room) {
   if (next) room.hostId = next.id;
 }
 
-function applySeen(room, q, d) {
-  const sq = new Set((Array.isArray(q) ? q : []).slice(0, 400).map(String));
-  const sd = new Set((Array.isArray(d) ? d : []).slice(0, 400).map(String));
-  room.questionDeck = room.questionDeck.filter((x) => !sq.has(x));
-  for (const c of DARE_CATS) room.dareDecks[c] = room.dareDecks[c].filter((x) => !sd.has(x));
+function dareById(room, id) {
+  if (DARE_INDEX.has(id)) return DARE_INDEX.get(id);
+  const c = room.customDares.find((d) => d.id === id);
+  return c ? { id: c.id, text: c.text, cat: "custom", by: c.by } : null;
 }
 
-// ---------- decks ----------
-function drawDare(room, cat) {
-  if (!room.dareDecks[cat].length) room.dareDecks[cat] = shuffle(DEFAULT_DARES[cat]);
-  return room.dareDecks[cat].shift();
-}
-
-function dealDares(room) {
-  const cats = shuffle(DARE_CATS).slice(0, 4);
-  const opts = cats.map((cat) => ({ text: drawDare(room, cat), cat, by: null }));
-  if (room.customDares.length) {
-    const swapped = opts[opts.length - 1];
-    room.dareDecks[swapped.cat].push(swapped.text);
-    const c = room.customDares.shift();
-    opts[opts.length - 1] = { text: c.text, cat: "custom", by: c.by };
+function validFavIds(room, ids) {
+  const out = [];
+  for (const id of Array.isArray(ids) ? ids : []) {
+    if (typeof id === "string" && !out.includes(id) && dareById(room, id)) out.push(id);
   }
-  opts.forEach((o, i) => {
-    o.id = "d" + i;
-  });
-  room.dareOptions = opts;
+  return out.slice(0, FAV_SLOTS);
 }
 
-function returnDare(room, o) {
-  if (!o) return;
-  if (o.cat === "custom") room.customDares.push({ text: o.text, by: o.by });
-  else room.dareDecks[o.cat].push(o.text);
+// a restarted server skips what this crowd already saw
+function applySeen(room, q, d) {
+  const sq = new Set((Array.isArray(q) ? q : []).slice(0, 500).map(String));
+  const sd = new Set((Array.isArray(d) ? d : []).slice(0, 500).map(String));
+  room.questionDeck = room.questionDeck.filter((x) => !sq.has(x.q));
+  for (const dare of DARE_INDEX.values()) if (sd.has(dare.text)) room.presented.add(dare.id);
+}
+
+// ---------- the dare board ----------
+function favCount(room, id) {
+  let n = 0;
+  for (const f of room.favs.values()) if (f.includes(id)) n++;
+  return n;
+}
+// a pick is worth 3 votes, so the room's stated favorites lead until real votes catch up
+const scoreOf = (room, id) => favCount(room, id) * 3 + (room.boardVotes.get(id) || 0);
+function onCooldown(room, id) {
+  const r = room.playedRound.get(id);
+  return r !== undefined && room.round - r < COOLDOWN_ROUNDS;
+}
+
+// brand-new written dares jump the line, then the best-scoring ones fill the rest
+function pickWritten(room, taken) {
+  const pool = room.customDares.filter((d) => !taken.has(d.id) && !onCooldown(room, d.id));
+  const newest = pool.filter((d) => !d.shown).sort((a, b) => b.n - a.n).slice(0, 2);
+  const rest = pool
+    .filter((d) => !newest.includes(d))
+    .sort((a, b) => scoreOf(room, b.id) - scoreOf(room, a.id) || b.n - a.n);
+  return [...newest, ...rest].slice(0, MAX_WRITTEN);
+}
+
+function freshDares(room, taken, n) {
+  const out = [];
+  const cats = shuffle(DARE_CATS);
+  const ok = (d) => !taken.has(d.id) && !onCooldown(room, d.id);
+  for (let i = 0; out.length < n && i < n * 8; i++) {
+    const cat = cats[i % cats.length];
+    let pool = DARE_BY_CAT[cat].filter((d) => ok(d) && !room.presented.has(d.id));
+    if (!pool.length) {
+      // seen everything in this flavor: start the cycle over
+      DARE_BY_CAT[cat].forEach((d) => room.presented.delete(d.id));
+      pool = DARE_BY_CAT[cat].filter(ok);
+    }
+    if (!pool.length) continue;
+    const d = pool[Math.floor(Math.random() * pool.length)];
+    taken.add(d.id);
+    out.push(d);
+  }
+  return out;
+}
+
+function buildBoard(room, exclude = new Set()) {
+  const taken = new Set(exclude);
+  const opts = [];
+  const push = (d, kind) => {
+    taken.add(d.id);
+    opts.push({ id: d.id, text: d.text, cat: d.cat, by: d.by || null, kind });
+  };
+
+  // 1) the room's top favorites
+  const favs = shuffle([...DARE_INDEX.values()])
+    .filter((d) => !taken.has(d.id) && !onCooldown(room, d.id) && scoreOf(room, d.id) > 0)
+    .sort((a, b) => scoreOf(room, b.id) - scoreOf(room, a.id))
+    .slice(0, FAV_SLOTS);
+  favs.forEach((d) => push(d, "fav"));
+
+  // 2) dares people wrote
+  pickWritten(room, taken).forEach((c) => {
+    c.shown = true;
+    push({ id: c.id, text: c.text, cat: "custom", by: c.by }, "written");
+  });
+
+  // 3) fresh ones, so the favorites list keeps growing
+  freshDares(room, taken, BASE_SLOTS - favs.length).forEach((d) => push(d, "fresh"));
+  return opts;
+}
+
+function dealBoard(room, exclude) {
+  let opts = buildBoard(room, exclude);
+  if (opts.length < 2) opts = buildBoard(room);
+  room.dareOptions = opts;
+  opts.forEach((o) => {
+    if (o.kind !== "written") room.presented.add(o.id);
+  });
+}
+
+// a dare written mid-vote pops straight onto everyone's board
+function addLive(room, d) {
+  if (room.phase !== "dare") return false;
+  if (room.dareOptions.filter((o) => o.kind === "written").length >= MAX_WRITTEN) return false;
+  d.shown = true;
+  const opt = { id: d.id, text: d.text, cat: "custom", by: d.by, kind: "written" };
+  let at = 0;
+  room.dareOptions.forEach((o, i) => {
+    if (o.kind === "fav" || o.kind === "written") at = i + 1;
+  });
+  room.dareOptions.splice(at, 0, opt);
+  return true;
 }
 
 function pickQuestion(room) {
@@ -176,8 +292,11 @@ function progress(room) {
   switch (room.phase) {
     case "dare":
       return { done: on.filter((p) => room.dareVotes.has(p.id)).length, total: on.length };
-    case "lock":
-      return { done: on.filter((p) => room.optOuts.has(p.id)).length, total: on.length };
+    case "agree":
+      return {
+        done: on.filter((p) => room.optOuts.has(p.id) || room.agreeIn.has(p.id)).length,
+        total: on.length,
+      };
     case "question":
       return { done: on.filter((p) => room.votes.has(p.id)).length, total: on.length };
     case "results":
@@ -187,9 +306,28 @@ function progress(room) {
   }
 }
 
-function dareView(d) {
-  return d ? { text: d.text, cat: d.cat, by: d.by, label: DARE_LABELS[d.cat] || "Dare" } : null;
+function dareLabel(d) {
+  return d.cat === "custom" ? DARE_LABELS.custom : DARE_LABELS[d.cat] || "Dare";
 }
+
+function rosterFor(room) {
+  const on = onlinePlayers(room);
+  if (room.phase === "dare") return on.map((p) => ({ id: p.id, name: p.name, done: room.dareVotes.has(p.id) }));
+  if (room.phase === "agree")
+    return on.map((p) => ({
+      id: p.id,
+      name: p.name,
+      done: room.optOuts.has(p.id) || room.agreeIn.has(p.id),
+      status: room.optOuts.has(p.id) ? "out" : room.agreeIn.has(p.id) ? "in" : null,
+    }));
+  if (room.phase === "question") return on.map((p) => ({ id: p.id, name: p.name, done: room.votes.has(p.id) }));
+  return [];
+}
+
+function effectiveEnd(room) {
+  return room.closing ? Math.min(room.endsAt, room.closeAt) : room.endsAt;
+}
+const remainingMs = (room) => (room.timer ? Math.max(0, effectiveEnd(room) - Date.now()) : 0);
 
 function buildState(room, pid) {
   const me = room.players.get(pid);
@@ -205,6 +343,8 @@ function buildState(room, pid) {
       isHost: pid === room.hostId,
       ready: room.ready.has(pid),
       sittingOut: room.optOuts.has(pid),
+      answer: room.optOuts.has(pid) ? "out" : room.agreeIn.has(pid) ? "in" : null,
+      favs: room.favs.get(pid) || [],
     },
     players: room.order
       .map((id) => room.players.get(id))
@@ -217,9 +357,14 @@ function buildState(room, pid) {
         online: p.online,
         isHost: p.id === room.hostId,
       })),
-    timeLeft: room.timeLeft,
-    timerTotal: room.timerTotal,
+    timer: {
+      left: room.timeLeft,
+      total: room.timerTotal,
+      remainingMs: remainingMs(room),
+      closing: room.closing,
+    },
     progress: progress(room),
+    roster: rosterFor(room),
     notice:
       room.notice && Date.now() - room.notice.at < 6000
         ? { id: `${room.code}:${room.notice.id}`, text: room.notice.text }
@@ -228,27 +373,45 @@ function buildState(room, pid) {
 
   if (room.phase === "dare") {
     const counts = {};
+    const voters = {};
     let reshuffleVotes = 0;
-    for (const v of room.dareVotes.values()) {
-      if (v === "reshuffle") reshuffleVotes++;
-      else counts[v] = (counts[v] || 0) + 1;
+    const reshuffleVoters = [];
+    for (const [vid, v] of room.dareVotes) {
+      const vp = room.players.get(vid);
+      if (!vp) continue;
+      if (v === "reshuffle") {
+        reshuffleVotes++;
+        reshuffleVoters.push({ id: vid, name: vp.name });
+      } else {
+        counts[v] = (counts[v] || 0) + 1;
+        (voters[v] = voters[v] || []).push({ id: vid, name: vp.name });
+      }
     }
     s.dare = {
       options: room.dareOptions.map((o) => ({
         id: o.id,
         text: o.text,
         by: o.by,
-        label: DARE_LABELS[o.cat] || "Dare",
+        kind: o.kind,
+        label: o.kind === "fav" ? "Room favorite" : dareLabel(o),
         votes: counts[o.id] || 0,
+        voters: voters[o.id] || [],
       })),
       reshuffleVotes,
+      reshuffleVoters,
       canReshuffle: room.reshuffles < MAX_RESHUFFLES,
       myVote: room.dareVotes.get(pid) || null,
     };
   }
-  if (["lock", "question", "results"].includes(room.phase)) s.lockedDare = dareView(room.lockedDare);
+  if (["agree", "countdown", "question", "results"].includes(room.phase) && room.lockedDare) {
+    const d = room.lockedDare;
+    s.lockedDare = { text: d.text, cat: d.cat, by: d.by, label: dareLabel(d) };
+  }
+  if (room.phase === "countdown") {
+    s.sitting = [...room.optOuts].map((id) => room.players.get(id)?.name).filter(Boolean);
+  }
   if (room.phase === "question") {
-    s.question = room.question;
+    s.question = { text: room.question.q, hint: room.question.h };
     s.targets = room.targets
       .filter((id) => room.players.has(id))
       .map((id) => ({ id, name: room.players.get(id).name }));
@@ -265,37 +428,85 @@ function emitState(room) {
 }
 
 function emitTick(room) {
-  io.to(room.code).emit("tick", { phase: room.phase, timeLeft: room.timeLeft, ...progress(room) });
+  io.to(room.code).emit("tick", {
+    phase: room.phase,
+    timeLeft: room.timeLeft,
+    remainingMs: remainingMs(room),
+    totalMs: room.timerTotal * 1000,
+    closing: room.closing,
+    ...progress(room),
+  });
 }
 
-// ---------- phase engine ----------
+// ---------- timer engine ----------
 function clearTimer(room) {
-  if (room.timer) {
-    clearInterval(room.timer);
-    room.timer = null;
-  }
+  if (room.timer) clearInterval(room.timer);
+  room.timer = null;
+  room.closing = false;
+  room.onEnd = null;
 }
 
 function startTimer(room, seconds, onEnd) {
   clearTimer(room);
-  room.timeLeft = seconds;
+  room.endsAt = Date.now() + seconds * 1000;
   room.timerTotal = seconds;
-  room.timer = setInterval(() => {
-    room.timeLeft -= 1;
-    emitTick(room);
-    if (room.timeLeft <= 0) {
-      clearTimer(room);
-      onEnd(room);
-    }
-  }, 1000);
+  room.timeLeft = seconds;
+  room.onEnd = onEnd;
+  room.timer = setInterval(() => tickRoom(room), 250);
 }
 
+function tickRoom(room) {
+  if (!room.timer) return;
+  const end = effectiveEnd(room);
+  if (Date.now() >= end) {
+    const fn = room.onEnd;
+    clearTimer(room);
+    room.timeLeft = 0;
+    if (fn) fn(room);
+    return;
+  }
+  const left = Math.ceil((end - Date.now()) / 1000);
+  if (left !== room.timeLeft) {
+    room.timeLeft = left;
+    emitTick(room);
+  }
+}
+
+// when everyone has answered, shorten the clock to a quick "last chance" window
+function syncClosing(room, bump = false) {
+  const all =
+    room.phase === "dare"
+      ? everyoneVoted(room, room.dareVotes)
+      : room.phase === "agree"
+      ? everyoneAnswered(room)
+      : false;
+  if (!room.timer) return;
+  if (all) {
+    if (!room.closing || bump) {
+      room.closing = true;
+      room.closeAt = Date.now() + CLOSE_MS;
+    }
+  } else {
+    room.closing = false;
+  }
+}
+
+function refresh(room, bump = false) {
+  const before = room.phase;
+  const round = room.round;
+  syncClosing(room, bump);
+  tickRoom(room);
+  if (room.phase === before && room.round === round) emitState(room);
+}
+
+// ---------- phase engine ----------
 function toLobby(room, notice) {
   clearTimer(room);
   room.phase = "lobby";
   room.dareOptions = [];
   room.dareVotes = new Map();
   room.optOuts = new Set();
+  room.agreeIn = new Set();
   room.ready = new Set();
   room.lockedDare = null;
   room.question = null;
@@ -308,7 +519,7 @@ function toLobby(room, notice) {
   emitState(room);
 }
 
-function beginDare(room, { newRound = true, notice = null } = {}) {
+function beginDare(room, { newRound = true, notice = null, exclude } = {}) {
   clearTimer(room);
   if (newRound) {
     room.round += 1;
@@ -317,6 +528,7 @@ function beginDare(room, { newRound = true, notice = null } = {}) {
   room.phase = "dare";
   room.dareVotes = new Map();
   room.optOuts = new Set();
+  room.agreeIn = new Set();
   room.ready = new Set();
   room.lockedDare = null;
   room.question = null;
@@ -324,7 +536,7 @@ function beginDare(room, { newRound = true, notice = null } = {}) {
   room.targets = [];
   room.votes = new Map();
   setNotice(room, notice);
-  dealDares(room);
+  dealBoard(room, exclude);
   startTimer(room, DARE_SECONDS, resolveDare);
   emitState(room);
 }
@@ -339,50 +551,62 @@ function resolveDare(room) {
     if (v === "reshuffle") reshuffleVotes++;
     else if (counts.has(v)) counts.set(v, counts.get(v) + 1);
   }
-  const top = Math.max(...counts.values());
+  // every vote helps build the room's favorites list
+  for (const [id, n] of counts) if (n) room.boardVotes.set(id, (room.boardVotes.get(id) || 0) + n);
+  const top = Math.max(0, ...counts.values());
 
   if (reshuffleVotes > top && room.reshuffles < MAX_RESHUFFLES) {
-    room.dareOptions.forEach((o) => returnDare(room, o));
     room.reshuffles += 1;
     room.dareVotes = new Map();
-    setNotice(room, "Not feeling those. New dares.");
-    dealDares(room);
+    setNotice(room, "Not feeling those. New board.");
+    dealBoard(room, new Set(room.dareOptions.map((o) => o.id)));
     startTimer(room, DARE_SECONDS, resolveDare);
     return emitState(room);
   }
 
   const tied = room.dareOptions.filter((o) => top === 0 || counts.get(o.id) === top);
   const pick = tied[Math.floor(Math.random() * tied.length)];
-  room.dareOptions.filter((o) => o !== pick).forEach((o) => returnDare(room, o));
-  room.lockedDare = { text: pick.text, cat: pick.cat, by: pick.by };
+  room.lockedDare = { id: pick.id, text: pick.text, cat: pick.cat, by: pick.by };
   room.dareOptions = [];
-  room.phase = "lock";
+  room.phase = "agree";
   room.optOuts = new Set();
+  room.agreeIn = new Set();
   setNotice(room, null);
-  startTimer(room, LOCK_SECONDS, resolveLock);
+  startTimer(room, AGREE_SECONDS, resolveAgree);
   emitState(room);
 }
 
-function resolveLock(room) {
-  if (room.phase !== "lock") return;
+function resolveAgree(room) {
+  if (room.phase !== "agree") return;
   clearTimer(room);
 
+  // no answer counts as "in"
   const eligible = onlinePlayers(room).filter((p) => !room.optOuts.has(p.id));
   if (eligible.length < 2) {
-    returnDare(room, room.lockedDare);
     if (onlinePlayers(room).length < 2) return toLobby(room, "Need at least 2 players to keep going.");
-    return beginDare(room, { newRound: false, notice: "Too many people sat out. Pick a different dare." });
+    return beginDare(room, {
+      newRound: false,
+      notice: "Too many people sat out. Vote a different dare.",
+      exclude: new Set([room.lockedDare.id]),
+    });
   }
 
   for (const id of room.optOuts) {
     const p = room.players.get(id);
     if (p) p.passes += 1;
   }
-  room.phase = "question";
   room.question = pickQuestion(room);
   room.targets = eligible.map((p) => p.id);
   room.votes = new Map();
+  room.phase = "countdown";
   setNotice(room, null);
+  startTimer(room, COUNTDOWN_SECONDS, startQuestion);
+  emitState(room);
+}
+
+function startQuestion(room) {
+  if (room.phase !== "countdown") return;
+  room.phase = "question";
   startTimer(room, QUESTION_SECONDS, finishRound);
   emitState(room);
 }
@@ -406,8 +630,13 @@ function finishRound(room) {
     .sort((a, b) => b.votes - a.votes);
 
   for (const r of rows) if (r.isWinner) room.players.get(r.id).score += 1;
+  if (rows.some((r) => r.isWinner) && room.lockedDare) room.playedRound.set(room.lockedDare.id, room.round);
 
-  room.results = { rows, winners: rows.filter((r) => r.isWinner).map((r) => r.name) };
+  room.results = {
+    rows,
+    winners: rows.filter((r) => r.isWinner).map((r) => r.name),
+    question: room.question.q,
+  };
   room.phase = "results";
   room.ready = new Set();
   room.timeLeft = 0;
@@ -418,10 +647,6 @@ function finishRound(room) {
 
 // advances the phase if everyone's done; returns true if it did
 function checkProgress(room) {
-  if (room.phase === "dare" && everyoneVoted(room, room.dareVotes)) {
-    resolveDare(room);
-    return true;
-  }
   if (room.phase === "question" && everyoneVoted(room, room.votes)) {
     finishRound(room);
     return true;
@@ -438,7 +663,9 @@ function presenceChanged(room) {
     return toLobby(room, "Need at least 2 players to keep going.");
   }
   if (!room.players.get(room.hostId)?.online) migrateHost(room);
-  if (!checkProgress(room)) emitState(room);
+  if (checkProgress(room)) return;
+  if (room.phase === "dare" || room.phase === "agree") return refresh(room);
+  emitState(room);
 }
 
 // ---------- sockets ----------
@@ -481,7 +708,7 @@ io.on("connection", (socket) => {
     addPlayer(room, pid, name || "Player", socket.id);
     attach(socket, room, pid);
     cb?.({ ok: true, pid, code });
-    emitState(room);
+    presenceChanged(room);
   });
 
   // a phone that dropped (sleep, signal, server restart) walks back in with its saved seat
@@ -511,6 +738,7 @@ io.on("connection", (socket) => {
       const score = Math.max(0, Math.min(999, Number(d.score) || 0));
       addPlayer(room, pid, d.name, socket.id, score);
     }
+    if (Array.isArray(d.favs)) room.favs.set(pid, validFavIds(room, d.favs));
     if (pid === room.creatorId) room.hostId = pid;
     // after a restart, whoever was host before gets the role back
     if (room.restored && d.wasHost && !room.hostClaimed) {
@@ -521,7 +749,7 @@ io.on("connection", (socket) => {
     attach(socket, room, pid);
     if (!room.players.get(room.hostId)?.online) migrateHost(room);
     cb?.({ ok: true, restored: room.restored });
-    emitState(room);
+    presenceChanged(room);
   });
 
   socket.on("player:leave", () => {
@@ -553,6 +781,7 @@ io.on("connection", (socket) => {
     clearTimer(room);
     room.phase = "ended";
     room.timeLeft = 0;
+    room.timerTotal = 0;
     setNotice(room, null);
     emitState(room);
   });
@@ -568,6 +797,32 @@ io.on("connection", (socket) => {
     toLobby(room, null);
   });
 
+  // ----- favorites -----
+  socket.on("dares:list", (_p, cb) => {
+    const { room } = ctx(socket);
+    if (!room) return cb?.({ ok: false });
+    const list = [...DARE_INDEX.values()].map((d) => ({
+      id: d.id,
+      text: d.text,
+      cat: d.cat,
+      label: DARE_LABELS[d.cat],
+      by: null,
+    }));
+    room.customDares.forEach((d) =>
+      list.push({ id: d.id, text: d.text, cat: "custom", label: DARE_LABELS.custom, by: d.by })
+    );
+    cb?.({ ok: true, list });
+  });
+
+  socket.on("fav:set", ({ ids } = {}, cb) => {
+    const { room, pid } = ctx(socket);
+    if (!room) return cb?.({ ok: false });
+    room.favs.set(pid, validFavIds(room, ids));
+    cb?.({ ok: true });
+    io.to(socket.id).emit("state", buildState(room, pid));
+  });
+
+  // ----- the dare board -----
   socket.on("dare:vote", ({ optionId } = {}) => {
     const { room, pid } = ctx(socket);
     if (!room || room.phase !== "dare") return;
@@ -576,24 +831,29 @@ io.on("connection", (socket) => {
       (optionId === "reshuffle" && room.reshuffles < MAX_RESHUFFLES);
     if (!ok) return;
     room.dareVotes.set(pid, optionId);
-    if (!checkProgress(room)) emitState(room);
+    refresh(room, true);
   });
 
-  socket.on("dare:optout", ({ out } = {}) => {
+  socket.on("dare:answer", ({ answer } = {}) => {
     const { room, pid } = ctx(socket);
-    if (!room || room.phase !== "lock") return;
-    if (out) room.optOuts.add(pid);
-    else room.optOuts.delete(pid);
-    emitState(room);
+    if (!room || room.phase !== "agree") return;
+    if (answer === "out") {
+      room.optOuts.add(pid);
+      room.agreeIn.delete(pid);
+    } else if (answer === "in") {
+      room.agreeIn.add(pid);
+      room.optOuts.delete(pid);
+    } else return;
+    refresh(room, true);
   });
 
+  // ----- the question -----
   socket.on("player:vote", ({ targetId } = {}) => {
     const { room, pid } = ctx(socket);
     if (!room || room.phase !== "question") return;
     if (!room.targets.includes(targetId) || room.votes.has(pid)) return;
     room.votes.set(pid, targetId);
-    emitTick(room);
-    checkProgress(room);
+    if (!checkProgress(room)) emitState(room);
   });
 
   socket.on("player:ready", () => {
@@ -604,6 +864,7 @@ io.on("connection", (socket) => {
     if (!checkProgress(room)) emitState(room);
   });
 
+  // ----- write your own -----
   socket.on("room:addDare", ({ text } = {}, cb) => {
     const { room, pid } = ctx(socket);
     if (!room) return cb?.({ ok: false });
@@ -612,8 +873,14 @@ io.on("connection", (socket) => {
     if (room.customDares.length >= MAX_CUSTOM) return cb?.({ ok: false, error: "Dare pile is full." });
     if (room.customDares.some((d) => d.text.toLowerCase() === t.toLowerCase()))
       return cb?.({ ok: false, error: "Someone already added that one." });
-    room.customDares.push({ text: t, by: room.players.get(pid).name });
-    cb?.({ ok: true });
+    const d = { id: `c:${++room.customN}`, text: t, by: room.players.get(pid).name, n: room.customN, shown: false };
+    room.customDares.push(d);
+    const live = addLive(room, d);
+    cb?.({ ok: true, live });
+    if (live) {
+      setNotice(room, `${d.by} added a dare`);
+      refresh(room, true);
+    }
   });
 
   socket.on("room:addQuestion", ({ text } = {}, cb) => {
@@ -622,10 +889,11 @@ io.on("connection", (socket) => {
     const q = normalizeQuestion(text);
     if (!q) return cb?.({ ok: false, error: "Write something first." });
     if (room.customQuestions.length >= MAX_CUSTOM) return cb?.({ ok: false, error: "Question pile is full." });
-    if (room.customQuestions.some((x) => x.toLowerCase() === q.toLowerCase()))
+    if (room.customQuestions.some((x) => x.q.toLowerCase() === q.toLowerCase()))
       return cb?.({ ok: false, error: "Someone already added that one." });
-    room.customQuestions.push(q);
-    room.questionDeck.unshift(q); // shows up soon
+    const item = { q, h: DEFAULT_HINT };
+    room.customQuestions.push(item);
+    room.questionDeck.unshift(item); // shows up soon
     cb?.({ ok: true });
   });
 
